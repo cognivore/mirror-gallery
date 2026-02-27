@@ -1,0 +1,30 @@
+# Nix / direnv
+.direnv/
+result
+result-*
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editor / IDE
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
+\#*\#
+.#*
+
+# Environment
+.env
+.env.local
+.env.*.local
