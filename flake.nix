@@ -4,6 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
+    claude-code.url = "github:sadjow/claude-code-nix";
   };
 
   outputs =
@@ -11,6 +12,7 @@
       self,
       nixpkgs,
       flake-utils,
+      claude-code,
       ...
     }:
     {
@@ -47,6 +49,7 @@
             devShells.default = pkgs.mkShell {
               buildInputs = [
                 pkgs.mirror-gallery
+                claude-code.packages.${system}.default
 
                 # Rust toolchain (same pattern as grim-monolith)
                 pkgs.rust-script
