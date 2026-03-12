@@ -87,6 +87,7 @@ in
                   MIRROR_GALLERY_ROOT = expandHome cfg.rootDir;
                   HOME = homeDir;
                 };
+                RunAtLoad = true;
                 StartInterval = cfg.timer.intervalSec;
                 StandardOutPath = "${homeDir}/Library/Logs/mirror-gallery.log";
                 StandardErrorPath = "${homeDir}/Library/Logs/mirror-gallery.log";

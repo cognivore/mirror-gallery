@@ -4,11 +4,14 @@
 //! [dependencies]
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
+//! rayon = "1"
 //! ```
 
+use rayon::prelude::*;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::{env, fs};
 
 #[derive(Deserialize)]
@@ -71,19 +74,39 @@ fn gh_list_repos(owner: &str) -> Result<Vec<Repo>, String> {
 
 fn sync_repo(owner: &str, repo: &Repo, target: &Path) -> bool {
     let vis = if repo.is_private { " (private)" } else { "" };
+    let label = format!("{}/{}{vis}", owner, repo.name);
 
     if target.exists() {
-        eprint!("  [fetch] {}/{}{vis} ", owner, repo.name);
-        match Command::new("git")
-            .args(["-C", &target.to_string_lossy(), "fetch", "--all", "--prune"])
-            .output()
-        {
-            Ok(o) if o.status.success() => { eprintln!("ok"); true }
-            Ok(o) => { eprintln!("FAIL (exit {})", o.status); false }
-            Err(e) => { eprintln!("FAIL ({e})"); false }
+        let tgt = target.to_string_lossy();
+        let fetched = Command::new("git")
+            .args(["-C", &tgt, "fetch", "--all", "--prune"])
+            .output();
+        match fetched {
+            Ok(o) if o.status.success() => {
+                match Command::new("git")
+                    .args(["-C", &tgt, "pull", "--ff-only", "--no-rebase"])
+                    .output()
+                {
+                    Ok(p) if p.status.success() => {
+                        eprintln!("  [sync] {label} ok");
+                        true
+                    }
+                    Ok(p) => {
+                        let hint = String::from_utf8_lossy(&p.stderr);
+                        eprintln!("  [sync] {label} fetched, pull skipped ({})",
+                            hint.lines().next().unwrap_or("diverged"));
+                        true
+                    }
+                    Err(e) => {
+                        eprintln!("  [sync] {label} fetched, pull error ({e})");
+                        true
+                    }
+                }
+            }
+            Ok(o) => { eprintln!("  [sync] {label} FAIL (exit {})", o.status); false }
+            Err(e) => { eprintln!("  [sync] {label} FAIL ({e})"); false }
         }
     } else {
-        eprint!("  [clone] {}/{}{vis} ", owner, repo.name);
         match Command::new("gh")
             .args([
                 "repo", "clone",
@@ -92,12 +115,13 @@ fn sync_repo(owner: &str, repo: &Repo, target: &Path) -> bool {
             ])
             .output()
         {
-            Ok(o) if o.status.success() => { eprintln!("ok"); true }
+            Ok(o) if o.status.success() => { eprintln!("  [clone] {label} ok"); true }
             Ok(o) => {
-                eprintln!("FAIL ({})", String::from_utf8_lossy(&o.stderr).trim());
+                eprintln!("  [clone] {label} FAIL ({})",
+                    String::from_utf8_lossy(&o.stderr).trim());
                 false
             }
-            Err(e) => { eprintln!("FAIL ({e})"); false }
+            Err(e) => { eprintln!("  [clone] {label} FAIL ({e})"); false }
         }
     }
 }
@@ -124,12 +148,18 @@ fn mirror_owner(root: &Path, owner: &str) -> (usize, usize) {
         return (0, 0);
     }
 
-    repos
-        .iter()
-        .map(|repo| sync_repo(owner, repo, &dir.join(&repo.name)))
-        .fold((0usize, 0usize), |(ok, fail), success| {
-            if success { (ok + 1, fail) } else { (ok, fail + 1) }
-        })
+    let ok = AtomicUsize::new(0);
+    let fail = AtomicUsize::new(0);
+
+    repos.par_iter().for_each(|repo| {
+        if sync_repo(owner, repo, &dir.join(&repo.name)) {
+            ok.fetch_add(1, Ordering::Relaxed);
+        } else {
+            fail.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+
+    (ok.into_inner(), fail.into_inner())
 }
 
 fn main() -> ExitCode {
@@ -187,10 +217,29 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    let (total_ok, total_fail) = args
-        .iter()
-        .map(|owner| mirror_owner(&root, owner))
-        .fold((0usize, 0usize), |(a, b), (c, d)| (a + c, b + d));
+    let jobs: usize = env::var("MIRROR_GALLERY_JOBS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(16);
+
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(jobs)
+        .build_global()
+        .ok();
+
+    eprintln!("mirror-gallery: syncing with {jobs} parallel jobs");
+
+    let total_ok = AtomicUsize::new(0);
+    let total_fail = AtomicUsize::new(0);
+
+    args.par_iter().for_each(|owner| {
+        let (ok, fail) = mirror_owner(&root, owner);
+        total_ok.fetch_add(ok, Ordering::Relaxed);
+        total_fail.fetch_add(fail, Ordering::Relaxed);
+    });
+
+    let total_ok = total_ok.into_inner();
+    let total_fail = total_fail.into_inner();
 
     eprintln!();
     eprintln!("mirror-gallery: {total_ok} ok, {total_fail} failed");
